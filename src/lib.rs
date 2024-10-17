@@ -1,5 +1,9 @@
+use ext::{create_ref_message, ft_contract, ref_contract};
 // Find all our documentation at https://docs.near.org
-use near_sdk::{log, near};
+use near_sdk::{log, near, Gas, NearToken, env, PromiseError};
+use near_sdk::json_types::U128;
+
+pub mod ext;
 
 // Define the contract structure
 #[near(contract_state)]
@@ -29,6 +33,54 @@ impl Contract {
         log!("Saving greeting: {greeting}");
         self.greeting = greeting;
     }
+
+    pub fn swap_usdc_for_vex(&mut self, amount: U128) {
+        ft_contract::ext("usdc.betvex.testnet".parse().unwrap())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(30))
+            .ft_transfer_call("ref-finance-101.testnet".parse().unwrap(), amount, "".to_string())
+            .then(
+                Self::ext(env::current_account_id())
+                .with_static_gas(Gas::from_tgas(200))
+                .ref_transfer_callback()
+            );
+    }
+
+    #[private]
+    pub fn ref_transfer_callback(&mut self, #[callback_result] call_result: Result<U128, PromiseError>,) {
+        let amount = call_result.unwrap();
+
+        let action = create_ref_message(
+            2197,
+            "usdc.betvex.testnet".parse().unwrap(),
+            "token.betvex.testnet".parse().unwrap(),
+            amount.0,
+            0,
+        );
+
+        ref_contract::ext("ref-finance-101.testnet".parse().unwrap())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(30))
+            .swap(action)
+            .then(
+                Self::ext(env::current_account_id())
+                .with_static_gas(Gas::from_tgas(150))
+                .ref_swap_callback()
+            );
+    }
+
+    #[private]
+    pub fn ref_swap_callback(&mut self, #[callback_result] call_result: Result<U128, PromiseError>,) {
+        let amount = call_result.unwrap();
+        
+        ref_contract::ext("ref-finance-101.testnet".parse().unwrap())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(30))
+            .withdraw("token.betvex.testnet".parse().unwrap(), amount);
+    }
+
+
+
 }
 
 /*
