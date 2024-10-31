@@ -1,107 +1,140 @@
 use ext::{create_ref_message, ft_contract, ref_contract};
-// Find all our documentation at https://docs.near.org
-use near_sdk::{log, near, Gas, NearToken, env, PromiseError};
 use near_sdk::json_types::U128;
+use near_sdk::{env, log, near, AccountId, Gas, NearToken, PromiseError, PanicOnDefault};
 
 pub mod ext;
 
 // Define the contract structure
 #[near(contract_state)]
+#[derive(PanicOnDefault)]
 pub struct Contract {
-    greeting: String,
+    ref_contract: AccountId,
+    pool_id: u64,
+    ft_contract_1: AccountId,
+    ft_contract_2: AccountId,
 }
 
-// Define the default, which automatically initializes the contract
-impl Default for Contract {
-    fn default() -> Self {
-        Self {
-            greeting: "Hello".to_string(),
-        }
-    }
-}
-
-// Implement the contract structure
 #[near]
 impl Contract {
-    // Public method - returns the greeting saved, defaulting to DEFAULT_GREETING
-    pub fn get_greeting(&self) -> String {
-        self.greeting.clone()
+    #[init]
+    #[private]
+    pub fn init(
+        ref_contract: AccountId,
+        pool_id: u64,
+        ft_contract_1: AccountId,
+        ft_contract_2: AccountId,
+    ) -> Self {
+        Self {
+            ref_contract,
+            pool_id,
+            ft_contract_1,
+            ft_contract_2,
+        }
     }
 
-    // Public method - accepts a greeting, such as "howdy", and records it
-    pub fn set_greeting(&mut self, greeting: String) {
-        log!("Saving greeting: {greeting}");
-        self.greeting = greeting;
-    }
-
-    pub fn swap_usdc_for_vex(&mut self, amount: U128) {
-        ft_contract::ext("usdc.betvex.testnet".parse().unwrap())
+    pub fn swap_in_ref_pool(&mut self, amount: U128) {
+        // Deposit the amount to ref finance you want to swap
+        ft_contract::ext(self.ft_contract_1.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
             .with_static_gas(Gas::from_tgas(30))
-            .ft_transfer_call("ref-finance-101.testnet".parse().unwrap(), amount, "".to_string())
+            .ft_transfer_call(self.ref_contract.clone(), amount, "".to_string())
             .then(
                 Self::ext(env::current_account_id())
-                .with_static_gas(Gas::from_tgas(200))
-                .ref_transfer_callback()
+                    .with_static_gas(Gas::from_tgas(200))
+                    .ref_transfer_callback(),
             );
     }
 
+    // If the cross contract call to deposit fails then you need to rollback any state changes in the swap_in_ref_pool method
     #[private]
-    pub fn ref_transfer_callback(&mut self, #[callback_result] call_result: Result<U128, PromiseError>,) {
-        let amount = call_result.unwrap();
+    pub fn ref_transfer_callback(
+        &mut self,
+        #[callback_result] call_result: Result<U128, PromiseError>,
+    ) {
+        if call_result.is_err() {
+            // Rollback state here
+            log!(
+                "Deposit to ref finance failed {:?}",
+                call_result.unwrap_err()
+            );
+            return;
+        }
 
+        let amount_deposited = call_result.unwrap();
+
+        // Prepare the action to swap the tokens
         let action = create_ref_message(
-            2197,
-            "usdc.betvex.testnet".parse().unwrap(),
-            "token.betvex.testnet".parse().unwrap(),
-            amount.0,
+            self.pool_id,
+            self.ft_contract_1.clone(),
+            self.ft_contract_2.clone(),
+            amount_deposited,
             0,
         );
 
-        ref_contract::ext("ref-finance-101.testnet".parse().unwrap())
+        // Call the ref contract to swap the tokens
+        ref_contract::ext(self.ref_contract.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
             .with_static_gas(Gas::from_tgas(30))
             .swap(action)
             .then(
                 Self::ext(env::current_account_id())
-                .with_static_gas(Gas::from_tgas(150))
-                .ref_swap_callback()
+                    .with_static_gas(Gas::from_tgas(150))
+                    .ref_swap_callback(),
             );
     }
 
+    // If the cross contract call to swap fails then you need to rollback any state changes in the ref_transfer_callback method
+    // But not rollback state in the swap_in_ref pool method since the deposit has already happened, you should have another
+    // method that allows you to proceed with the swap if the deposit is successful
+    // but there shouldn't be much to cause an error at the swap stage
     #[private]
-    pub fn ref_swap_callback(&mut self, #[callback_result] call_result: Result<U128, PromiseError>,) {
-        let amount = call_result.unwrap();
-        
-        ref_contract::ext("ref-finance-101.testnet".parse().unwrap())
+    pub fn ref_swap_callback(
+        &mut self,
+        #[callback_result] call_result: Result<U128, PromiseError>,
+    ) {
+        if call_result.is_err() {
+            // Rollback state here
+            log!(
+                "Swap in ref finance failed {:?}",
+                call_result.unwrap_err()
+            );
+            return;
+        }
+
+        let amount_can_withdraw = call_result.unwrap();
+
+        // Call the ref contract to withdraw the tokens
+        ref_contract::ext(self.ref_contract.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
             .with_static_gas(Gas::from_tgas(30))
-            .withdraw("token.betvex.testnet".parse().unwrap(), amount);
+            .withdraw(self.ft_contract_2.clone(), amount_can_withdraw)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(100))
+                    .ref_withdraw_callback(),
+            );
     }
 
+    // If the cross contract call to withdraw fails then you need to rollback any state changes in the ref_swap_callback method
+    // But not rollback state in the previous two methods since the previous cross contract calls were successful
+    // you should have another method that allows you to proceed with the withdraw if the swap is successful
+    // but there shouldn't be much to cause an error at the withdraw stage
+    #[private]
+    pub fn ref_withdraw_callback(
+        &mut self,
+        #[callback_result] call_result: Result<U128, PromiseError>,
+    ) -> U128 {
+        if call_result.is_err() {
+            // Rollback state here
+            log!(
+                "Withdraw from ref finance failed {:?}",
+                call_result.unwrap_err()
+            );
+            return U128(0);
+        }
 
+        let amount_withdrew = call_result.unwrap();
 
-}
-
-/*
- * The rest of this file holds the inline tests for the code above
- * Learn more about Rust tests: https://doc.rust-lang.org/book/ch11-01-writing-tests.html
- */
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn get_default_greeting() {
-        let contract = Contract::default();
-        // this test did not call set_greeting so should return the default "Hello" greeting
-        assert_eq!(contract.get_greeting(), "Hello");
-    }
-
-    #[test]
-    fn set_then_get_greeting() {
-        let mut contract = Contract::default();
-        contract.set_greeting("howdy".to_string());
-        assert_eq!(contract.get_greeting(), "howdy");
+        amount_withdrew
     }
 }

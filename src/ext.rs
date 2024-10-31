@@ -14,15 +14,15 @@ pub fn create_ref_message(
     pool_id: u64,
     token_in: AccountId,
     token_out: AccountId,
-    amount_in: u128,
-    min_amount_out: u128,
+    amount_in: U128,
+    min_amount_out: u128, // Minimum amount of tokens you want to receive, any less and the call will fail
 ) -> Vec<Action> {
     // Create the RefInnerMsg instance
     let action = Action {
         pool_id,
         token_in,
         token_out,
-        amount_in: U128(amount_in),
+        amount_in,
         min_amount_out: U128(min_amount_out),
     };
 
