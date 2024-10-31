@@ -1,6 +1,6 @@
 use ext::{create_ref_message, ft_contract, ref_contract};
 use near_sdk::json_types::U128;
-use near_sdk::{env, log, near, AccountId, Gas, NearToken, PromiseError, PanicOnDefault};
+use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, PromiseError};
 
 pub mod ext;
 
@@ -94,10 +94,7 @@ impl Contract {
     ) {
         if call_result.is_err() {
             // Rollback state here
-            log!(
-                "Swap in ref finance failed {:?}",
-                call_result.unwrap_err()
-            );
+            log!("Swap in ref finance failed {:?}", call_result.unwrap_err());
             return;
         }
 
